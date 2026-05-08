@@ -5101,12 +5101,16 @@ async function _loadUserData(authUserId) {
   if (data) {
     _authUser = data;
     _agency = data.agencies;
-    // Restore avatar from localStorage if DB column missing or empty
+    // Restore avatar: priority = agencies.avatar → agency_users.avatar → localStorage
     if (_agency && !_agency.avatar) {
-      try {
-        const local = localStorage.getItem('trackly-agency-avatar-' + _agency.id);
-        if (local) _agency.avatar = local;
-      } catch(e) {}
+      if (data.avatar) {
+        _agency.avatar = data.avatar; // from agency_users.avatar (guaranteed column)
+      } else {
+        try {
+          const local = localStorage.getItem('trackly-agency-avatar-' + _agency.id);
+          if (local) _agency.avatar = local;
+        } catch(e) {}
+      }
     }
     await _enterDashboard();
   }
@@ -5595,22 +5599,30 @@ async function handleProfileAvatarUpload(event) {
   if (!file) return;
   event.target.value = '';
   _compressImage(file, async base64 => {
-    // 1. Save to localStorage immediately — works always, no SQL needed, survives F5
-    const lsKey = 'trackly-agency-avatar' + (_agency?.id ? '-' + _agency.id : '');
-    try { localStorage.setItem(lsKey, base64); } catch(e) {}
-
-    // 2. Update in-memory and UI right away
+    // Update in-memory and UI immediately
     if (_agency) _agency.avatar = base64;
+    if (_authUser) _authUser._agencyAvatar = base64;
     _updateAgencyUI();
     const prev = document.getElementById('profile-avatar-preview');
     if (prev) { prev.innerHTML = `<img src="${base64}" style="width:100%;height:100%;object-fit:cover;border-radius:14px">`; prev.style.background = 'transparent'; }
-    showNotif('✅ Foto atualizada!');
 
-    // 3. Try DB (best effort — works if avatar column exists)
-    if (_agency) {
-      const { error } = await _SB.from('agencies').update({ avatar: base64 }).eq('id', _agency.id);
-      if (error) console.warn('[TrackLy] Avatar salvo localmente; para sincronizar entre dispositivos execute:\nALTER TABLE agencies ADD COLUMN IF NOT EXISTS avatar text;');
+    // Primary DB save: agency_users table (column definitely exists, already used for user photos)
+    let savedToDB = false;
+    if (_authUser?.id) {
+      const { error: uErr } = await _SB.from('agency_users').update({ avatar: base64 }).eq('id', _authUser.id);
+      if (!uErr) savedToDB = true;
+      else console.warn('[TrackLy] Erro ao salvar em agency_users:', uErr);
     }
+
+    // Secondary: try agencies table too (works if column exists)
+    if (_agency?.id) {
+      await _SB.from('agencies').update({ avatar: base64 }).eq('id', _agency.id);
+    }
+
+    // Fallback: localStorage (same device only, but better than nothing)
+    try { localStorage.setItem('trackly-agency-avatar-' + (_agency?.id||'x'), base64); } catch(e) {}
+
+    showNotif(savedToDB ? '✅ Foto salva!' : '✅ Foto atualizada (local)!');
   });
 }
 
