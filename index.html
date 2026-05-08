@@ -5101,6 +5101,13 @@ async function _loadUserData(authUserId) {
   if (data) {
     _authUser = data;
     _agency = data.agencies;
+    // Restore avatar from localStorage if DB column missing or empty
+    if (_agency && !_agency.avatar) {
+      try {
+        const local = localStorage.getItem('trackly-agency-avatar-' + _agency.id);
+        if (local) _agency.avatar = local;
+      } catch(e) {}
+    }
     await _enterDashboard();
   }
 }
@@ -5588,23 +5595,21 @@ async function handleProfileAvatarUpload(event) {
   if (!file) return;
   event.target.value = '';
   _compressImage(file, async base64 => {
+    // 1. Save to localStorage immediately — works always, no SQL needed, survives F5
+    const lsKey = 'trackly-agency-avatar' + (_agency?.id ? '-' + _agency.id : '');
+    try { localStorage.setItem(lsKey, base64); } catch(e) {}
+
+    // 2. Update in-memory and UI right away
+    if (_agency) _agency.avatar = base64;
+    _updateAgencyUI();
     const prev = document.getElementById('profile-avatar-preview');
     if (prev) { prev.innerHTML = `<img src="${base64}" style="width:100%;height:100%;object-fit:cover;border-radius:14px">`; prev.style.background = 'transparent'; }
+    showNotif('✅ Foto atualizada!');
+
+    // 3. Try DB (best effort — works if avatar column exists)
     if (_agency) {
       const { error } = await _SB.from('agencies').update({ avatar: base64 }).eq('id', _agency.id);
-      if (error) {
-        console.error('[TrackLy] Erro ao salvar avatar da agência:', error);
-        if ((error.message||'').toLowerCase().includes('column') || error.code === '42703') {
-          console.warn('%c[TrackLy] A coluna avatar não existe na tabela agencies. Execute no Supabase SQL Editor:\nALTER TABLE agencies ADD COLUMN IF NOT EXISTS avatar text;\n\nDepois, execute também:\nALTER TABLE clients ADD COLUMN IF NOT EXISTS avatar text;\nALTER TABLE agency_users ADD COLUMN IF NOT EXISTS avatar text;', 'color:orange;font-size:14px;font-weight:bold');
-          showNotif('⚠️ Execute o SQL no Supabase para habilitar fotos (ver console)', true);
-        } else {
-          showNotif('⚠️ Erro ao salvar foto: ' + (error.message||error.code), true);
-        }
-        return;
-      }
-      _agency.avatar = base64;
-      _updateAgencyUI();
-      showNotif('✅ Foto atualizada!');
+      if (error) console.warn('[TrackLy] Avatar salvo localmente; para sincronizar entre dispositivos execute:\nALTER TABLE agencies ADD COLUMN IF NOT EXISTS avatar text;');
     }
   });
 }
