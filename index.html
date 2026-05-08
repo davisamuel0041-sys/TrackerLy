@@ -2382,6 +2382,22 @@
           <div class="agency-rating-stars" id="ratingStars"></div>
           <span class="agency-rating-val" id="ratingVal">0.0</span>
         </div>
+        <!-- Agency notification bell -->
+        <div style="position:relative">
+          <button id="agency-bell-btn" onclick="toggleAgencyNotifs()" title="Notificações de clientes" style="width:36px;height:36px;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,0.05);color:var(--text-dim);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.2s;" onmouseover="this.style.borderColor='var(--border-hover)';this.style.color='var(--text)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-dim)'">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            <span id="agency-bell-dot" style="display:none;position:absolute;top:6px;right:6px;width:7px;height:7px;border-radius:50%;background:var(--accent);border:1.5px solid var(--bg)"></span>
+          </button>
+          <div id="agency-notif-panel" style="display:none;position:absolute;top:44px;right:0;width:300px;background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:16px;z-index:200;box-shadow:0 8px 32px rgba(0,0,0,0.3)">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+              <div style="font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.7px">Notificações</div>
+              <button onclick="clearAgencyNotifs()" style="font-size:11px;color:var(--text-dim);background:none;border:none;cursor:pointer;padding:2px 6px;border-radius:6px" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text-dim)'">Limpar</button>
+            </div>
+            <div id="agency-notif-list" style="display:flex;flex-direction:column;gap:8px;max-height:240px;overflow-y:auto">
+              <div style="font-size:13px;color:var(--text-dim);padding:8px 0">Nenhuma notificação.</div>
+            </div>
+          </div>
+        </div>
         <div class="profile-wrap">
           <div class="profile-avatar" onclick="toggleProfileMenu()" id="profileAvatar">—</div>
           <div class="profile-dropdown" id="profileDropdown">
@@ -3089,16 +3105,16 @@
           <div class="cp-side">
             <div class="info-card">
               <div class="info-card-label">⏱ Prazo de Entrega</div>
-              <div class="info-card-value countdown" id="cp-deadline-val">10 dias</div>
-              <div class="info-card-sub" id="cp-deadline-date">15 de Maio de 2025</div>
+              <div class="info-card-value countdown" id="cp-deadline-val">—</div>
+              <div class="info-card-sub" id="cp-deadline-date">—</div>
             </div>
             <div class="info-card">
               <div class="info-card-label">👤 Trabalhando Agora</div>
               <div class="working-now">
                 <div class="working-dot"></div>
                 <div>
-                  <div class="info-card-value" style="font-size:16px" id="cp-worker-name">Ana Silva</div>
-                  <div class="info-card-sub" id="cp-worker-role">Designer Sênior · Etapa: Criação</div>
+                  <div class="info-card-value" style="font-size:16px" id="cp-worker-name">—</div>
+                  <div class="info-card-sub" id="cp-worker-role">—</div>
                 </div>
               </div>
             </div>
@@ -3461,12 +3477,7 @@ const projects = {
   }
 };
 
-const updates = [
-  { text: '🎨 Ana Silva avançou a etapa de Criação — logotipos em desenvolvimento', time: 'Hoje, 14h22' },
-  { text: '🔍 Pesquisa de referências concluída — moodboard entregue para aprovação interna', time: 'Ontem, 10h05' },
-  { text: '✅ Briefing validado — conceito criativo definido', time: '30 Abr, 09h18' },
-  { text: '🚀 Projeto iniciado — bem-vindo ao TrackLy!', time: '22 Abr, 08h00' },
-];
+const updates = [];
 
 let currentProject = 'cafe';
 let projectSteps = JSON.parse(JSON.stringify(projects));
@@ -3523,9 +3534,9 @@ async function goToClient() {
       return;
     }
 
-    // Now check email match
+    // Fetch client + agency name/avatar in one join (requires agencies SELECT policy for anon)
     const { data: found, error: loginErr } = await _SB.from('clients')
-      .select('*')
+      .select('*, agencies(name, avatar)')
       .eq('access_code', code)
       .ilike('email', email)
       .limit(1);
@@ -3537,7 +3548,6 @@ async function goToClient() {
     }
 
     if (!found || found.length === 0) {
-      // Show what email is stored vs what was typed
       const storedEmail = byCode[0]?.email || '(vazio)';
       showNotif(`⚠️ E-mail inválido. Esperado: ${storedEmail} · Digitado: ${email}`, true);
       return;
@@ -3545,10 +3555,13 @@ async function goToClient() {
 
     const client = found[0];
 
-    // Load agency name separately
-    if (client.agency_id) {
-      const { data: ag } = await _SB.from('agencies').select('name').eq('id', client.agency_id).limit(1);
-      if (ag && ag[0]) client._agencyName = ag[0].name;
+    // Extract agency info from join (agencies must have a SELECT policy for anon)
+    if (client.agencies) {
+      client._agencyName   = client.agencies.name   || null;
+      client._agencyAvatar = client.agencies.avatar || null;
+    } else if (client.agency_id) {
+      // Join blocked by RLS — run this SQL once in Supabase:
+      console.warn('%c[TrackLy] Nome da agência não carregou. Execute no Supabase SQL Editor:\nCREATE POLICY "anon_read_agencies" ON agencies FOR SELECT USING (true);', 'color:orange;font-size:15px;font-weight:bold');
     }
 
     window._clientLoggedIn = client;
@@ -3900,8 +3913,17 @@ async function advanceStep(key, idx) {
     if (nextStep?.id) {
       await _SB.from('project_steps').update({ status: 'active' }).eq('id', nextStep.id);
     }
-    // Also refresh _lastProjects cache
-    if (proj.dbProjectId) openProjectById(proj.dbProjectId);
+      // Update _lastProjects cache so kanban reflects new progress
+    if (proj.dbProjectId && window._lastProjects) {
+      const lp = window._lastProjects.find(x => x.id === proj.dbProjectId);
+      if (lp && lp.project_steps) {
+        const doneS = lp.project_steps.find(s => s.id === steps[idx].id);
+        if (doneS) doneS.status = 'done';
+        const nextS = next && lp.project_steps.find(s => s.id === next.id);
+        if (nextS) nextS.status = 'active';
+      }
+      _renderKanban(window._lastProjects);
+    }
   }
   showNotif('✅ Etapa avançada! Cliente notificado.');
   const feed = document.getElementById('updates-feed');
@@ -3932,19 +3954,14 @@ async function deleteCurrentProject() {
   const btn = document.getElementById('modal-delete-btn');
   if (btn) { btn.textContent = 'Excluindo...'; btn.disabled = true; }
 
-  // Step 1: delete project_steps (required before project due to FK)
+  // Step 1: delete project_steps — if RLS blocks it, log and continue (FK may not be enforced)
   const { error: stepsErr } = await _SB.from('project_steps').delete().eq('project_id', p.id);
   if (stepsErr) {
-    console.error('Erro ao excluir etapas:', stepsErr);
-    // FK will block project delete — show SQL hint
+    console.warn('[TrackLy] Não conseguiu excluir etapas (pode ser RLS):', stepsErr);
     if (stepsErr.code === '42501' || (stepsErr.message||'').toLowerCase().includes('policy')) {
-      showNotif('⚠️ Sem permissão para excluir etapas. Execute o SQL no Supabase.', true);
       console.warn('%c[TrackLy] Execute no Supabase SQL Editor:\nCREATE POLICY "auth_manage_project_steps" ON project_steps FOR ALL TO authenticated USING (true) WITH CHECK (true);', 'color:orange;font-size:14px');
-    } else {
-      showNotif('⚠️ Erro ao excluir etapas: ' + (stepsErr.message||stepsErr.code), true);
     }
-    if (btn) { btn.textContent = '🗑 Excluir'; btn.disabled = false; }
-    return;
+    // Continue to delete the project anyway
   }
 
   // Step 2: delete the project — try with agency_id filter first, then without
@@ -4157,6 +4174,7 @@ function renderClientView() {
     } else {
       const icons = ['🎨','📊','🎥','🌐','📱','✉️','📋','🚀'];
       const colors = ['rgba(75,143,232,0.12)','rgba(34,211,165,0.12)','rgba(123,92,240,0.12)','rgba(245,166,35,0.12)'];
+      const agencyAvatar = client?._agencyAvatar || null;
       grid.innerHTML = projects.map((p, i) => {
         const steps = p.project_steps || [];
         const done  = steps.filter(s => (s.status||'').toLowerCase() === 'done').length;
@@ -4165,19 +4183,25 @@ function renderClientView() {
         const key   = 'db_' + p.id;
         const st    = isDone(p) ? 'done' : needsAttn(p) ? 'delayed' : isActive(p) ? 'active' : 'pending';
         const stLabel = {done:'✓ Concluído', delayed:'⚠ Aguardando aprovação', active:'● Em andamento', pending:'○ Em construção'}[st];
+        const iconHtml = agencyAvatar
+          ? `<img src="${agencyAvatar}" style="width:100%;height:100%;object-fit:cover;border-radius:12px">`
+          : icons[i%icons.length];
+        const iconBg = agencyAvatar ? 'transparent' : colors[i%colors.length];
         // Pre-build projectSteps entry for openClientProject
         projectSteps[key] = {
           title: p.title || 'Projeto',
           subtitle: (p.type||'Projeto') + (p.deadline ? ' · Prazo: ' + dl : ''),
+          deadline: p.deadline || null,
           steps: steps.length > 0
             ? steps.sort((a,b)=>(a.order_index||0)-(b.order_index||0)).map(s => ({
                 icon: '📋', label: s.title||s.name||'Etapa',
-                status: s.status||'pending', responsible: s.assigned_to||'—', note: s.note||''
+                status: s.status||'pending', responsible: s.assigned_to||'—',
+                note: s.note||'', notes: s.notes||[]
               }))
-            : [{icon:'📋', label:'Em andamento', status:'active', responsible:'—', note:''}]
+            : [{icon:'📋', label:'Em andamento', status:'active', responsible:'—', note:'', notes:[]}]
         };
         return `<div class="cd-proj-card" onclick="openClientProject('${key}')">
-          <div class="cd-proj-icon" style="background:${colors[i%colors.length]}">${icons[i%icons.length]}</div>
+          <div class="cd-proj-icon" style="background:${iconBg};overflow:hidden;padding:${agencyAvatar?'0':''};">${iconHtml}</div>
           <div class="cd-proj-name">${p.title||'Projeto'}</div>
           <div class="cd-proj-type">${p.type||'Projeto'}${p.created_at ? ' · Iniciado em ' + new Date(p.created_at).toLocaleDateString('pt-BR',{day:'numeric',month:'short',year:'numeric'}) : ''}</div>
           <div>
@@ -4327,14 +4351,50 @@ function openClientProject(key) {
     container.appendChild(div);
   });
 
+  // Deadline info
+  const dlEl  = document.getElementById('cp-deadline-val');
+  const dlSub = document.getElementById('cp-deadline-date');
+  if (proj.deadline) {
+    const dlDate = new Date(proj.deadline);
+    const today  = new Date(); today.setHours(0,0,0,0);
+    const diff   = Math.ceil((dlDate - today) / 86400000);
+    if (dlEl)  dlEl.textContent  = diff > 0 ? diff + (diff === 1 ? ' dia' : ' dias') : diff === 0 ? 'Hoje' : 'Atrasado';
+    if (dlSub) dlSub.textContent = dlDate.toLocaleDateString('pt-BR', {day:'numeric', month:'long', year:'numeric'});
+  } else {
+    if (dlEl)  dlEl.textContent  = '—';
+    if (dlSub) dlSub.textContent = '—';
+  }
+
+  // Worker info — responsible from active step (or last done step)
+  const activeStep = steps.find(s => s.status === 'active') || steps.filter(s => s.status === 'done').slice(-1)[0];
+  const workerEl   = document.getElementById('cp-worker-name');
+  const workerRole = document.getElementById('cp-worker-role');
+  if (activeStep && activeStep.responsible && activeStep.responsible !== '—') {
+    if (workerEl)   workerEl.textContent   = activeStep.responsible;
+    if (workerRole) workerRole.textContent = activeStep.label ? 'Etapa: ' + activeStep.label : '—';
+  } else {
+    if (workerEl)   workerEl.textContent   = '—';
+    if (workerRole) workerRole.textContent = '—';
+  }
+
+  // Diary — collect all step notes
   const feed = document.getElementById('updates-feed');
   feed.innerHTML = '';
-  updates.forEach(u => {
-    const div = document.createElement('div');
-    div.className = 'update-item';
-    div.innerHTML = `<div class="update-dot-wrap"><div class="update-dot"></div></div><div><div class="update-text">${u.text}</div><div class="update-time">${u.time}</div></div>`;
-    feed.appendChild(div);
+  const diary = [];
+  steps.forEach(s => {
+    const allNotes = Array.isArray(s.notes) && s.notes.length > 0 ? s.notes : (s.note ? [s.note] : []);
+    allNotes.forEach(n => { if (n) diary.push({ text: n, step: s.label }); });
   });
+  if (diary.length === 0) {
+    feed.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:8px 0">Nenhuma atualização ainda.</div>';
+  } else {
+    diary.forEach(u => {
+      const div = document.createElement('div');
+      div.className = 'update-item';
+      div.innerHTML = `<div class="update-dot-wrap"><div class="update-dot"></div></div><div><div class="update-text">${u.text}</div><div class="update-time">${u.step}</div></div>`;
+      feed.appendChild(div);
+    });
+  }
 
   document.getElementById('client-dashboard').style.display = 'none';
   document.getElementById('client-project-panel').classList.add('visible');
@@ -4348,7 +4408,48 @@ function closeClientProject() {
 }
 
 function pedirAtualizacao() {
+  const client = window._clientLoggedIn;
+  const clientName = client?.name || 'Cliente';
+  const now = new Date().toLocaleString('pt-BR', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+  const notifs = JSON.parse(localStorage.getItem('trackly-agency-notifs') || '[]');
+  notifs.unshift({ text: `📩 ${clientName} solicitou uma atualização`, time: now });
+  localStorage.setItem('trackly-agency-notifs', JSON.stringify(notifs.slice(0,20)));
+  const dot = document.getElementById('agency-bell-dot');
+  if (dot) dot.style.display = 'block';
+  _renderAgencyNotifs();
   showNotif('📩 Solicitação enviada! A agência foi notificada.');
+}
+
+function _renderAgencyNotifs() {
+  const notifs = JSON.parse(localStorage.getItem('trackly-agency-notifs') || '[]');
+  const list = document.getElementById('agency-notif-list');
+  if (!list) return;
+  const dot = document.getElementById('agency-bell-dot');
+  if (dot) dot.style.display = notifs.length > 0 ? 'block' : 'none';
+  list.innerHTML = notifs.length === 0
+    ? '<div style="font-size:13px;color:var(--text-dim);padding:8px 0">Nenhuma notificação.</div>'
+    : notifs.map(n => `<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)"><div style="width:7px;height:7px;border-radius:50%;background:var(--accent);margin-top:5px;flex-shrink:0"></div><div><div style="font-size:13px;color:var(--text)">${n.text}</div><div style="font-size:11px;color:var(--text-dim);margin-top:2px">${n.time}</div></div></div>`).join('');
+}
+
+function toggleAgencyNotifs() {
+  const panel = document.getElementById('agency-notif-panel');
+  if (!panel) return;
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'block';
+  if (!open) _renderAgencyNotifs();
+  document.addEventListener('click', function handler(e) {
+    if (!document.getElementById('agency-bell-btn')?.contains(e.target) && !panel.contains(e.target)) {
+      panel.style.display = 'none';
+      document.removeEventListener('click', handler);
+    }
+  });
+}
+
+function clearAgencyNotifs() {
+  localStorage.removeItem('trackly-agency-notifs');
+  _renderAgencyNotifs();
+  const panel = document.getElementById('agency-notif-panel');
+  if (panel) panel.style.display = 'none';
 }
 
 /* ─── CLIENT DATA ─── */
@@ -5060,6 +5161,7 @@ async function _enterDashboard() {
   setView('agency');
   renderRatingStars(0);
   _updateAgencyUI();
+  _renderAgencyNotifs();
   showPage('dashboard', document.querySelector('.nav-item'));
   await Promise.all([_loadClients(), _loadProjects(), _loadAgencyUsers()]);
 }
@@ -5358,8 +5460,8 @@ async function openProjectById(id) {
     subtitle: (p.type||'Projeto') + ' · ' + (p.deadline ? new Date(p.deadline+'T12:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'}) : 'Sem prazo'),
     dbProjectId: id,
     steps: steps.length > 0
-      ? steps.map(s => ({ id: s.id, icon:'📋', label: s.title||s.name||'Etapa', status: s.status||'pending', responsible: s.assigned_to||'—', note: s.note||'' }))
-      : [{ icon:'📋', label:'Em andamento', status:'active', responsible:'—', note:'' }]
+      ? steps.map(s => ({ id: s.id, icon:'📋', label: s.title||s.name||'Etapa', status: s.status||'pending', responsible: s.assigned_to||'—', note: s.note||'', notes: s.notes||[] }))
+      : [{ icon:'📋', label: ({briefing:'Briefing','em-andamento':'Em Andamento',revisao:'Revisão',entregue:'Entregue'})[p.status]||'Em Andamento', status:'active', responsible:'—', note:'', notes:[] }]
   };
   openProject(key);
 }
@@ -5431,10 +5533,8 @@ async function savePassword() {
 async function handleProfileAvatarUpload(event) {
   const file = event.target.files[0];
   if (!file) return;
-  if (file.size > 10 * 1024 * 1024) { showNotif('⚠️ Imagem maior que 10MB', true); return; }
-  const reader = new FileReader();
-  reader.onload = async (e) => {
-    const base64 = e.target.result;
+  event.target.value = '';
+  _compressImage(file, async base64 => {
     const prev = document.getElementById('profile-avatar-preview');
     if (prev) { prev.innerHTML = `<img src="${base64}" style="width:100%;height:100%;object-fit:cover;border-radius:14px">`; prev.style.background = 'transparent'; }
     if (_agency) {
@@ -5444,9 +5544,7 @@ async function handleProfileAvatarUpload(event) {
       _updateAgencyUI();
       showNotif('✅ Foto atualizada!');
     }
-  };
-  reader.readAsDataURL(file);
-  event.target.value = '';
+  });
 }
 
 /* ══ THEME ══ */
