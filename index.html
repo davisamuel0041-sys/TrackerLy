@@ -3504,7 +3504,13 @@ window.addEventListener('scroll', () => {
   document.querySelector('.land-nav')?.classList.toggle('scrolled', window.scrollY > 20);
 }, { passive: true });
 
-function goToHome() { setView('home'); }
+function goToHome() {
+  // Clear client portal session
+  try { sessionStorage.removeItem('trackly-client-session'); sessionStorage.removeItem('trackly-client-subview'); } catch(e) {}
+  window._clientLoggedIn = null;
+  window._clientProjects = [];
+  setView('home');
+}
 function goToLogin() { setView('login'); }
 function goToAgency() {
   setView('agency');
@@ -3580,6 +3586,15 @@ async function goToClient() {
     }
     window._clientProjects = projs || [];
 
+    // Persist client session so F5 keeps them logged in
+    try {
+      sessionStorage.setItem('trackly-client-session', JSON.stringify({
+        client: window._clientLoggedIn,
+        projs: window._clientProjects
+      }));
+      sessionStorage.setItem('trackly-client-subview', 'dashboard');
+    } catch(e) {}
+
     if (codeEl) codeEl.value = '';
     if (emailEl) emailEl.value = '';
   }
@@ -3603,6 +3618,7 @@ function showPage(id, btn) {
   if (btn) btn.classList.add('active');
   if (id === 'users') renderUsers();
   if (id === 'profile') _updateProfileUI();
+  sessionStorage.setItem('trackly-agency-page', id);
 }
 
 // ─── SIDEBAR TOGGLE ───
@@ -4399,12 +4415,14 @@ function openClientProject(key) {
   document.getElementById('client-dashboard').style.display = 'none';
   document.getElementById('client-project-panel').classList.add('visible');
   window.scrollTo(0,0);
+  try { sessionStorage.setItem('trackly-client-subview', key); } catch(e) {}
 }
 
 function closeClientProject() {
   document.getElementById('client-dashboard').style.display = 'block';
   document.getElementById('client-project-panel').classList.remove('visible');
   window.scrollTo(0,0);
+  try { sessionStorage.setItem('trackly-client-subview', 'dashboard'); } catch(e) {}
 }
 
 function pedirAtualizacao() {
@@ -5039,10 +5057,40 @@ window._lastClients = [];
 
 /* ── Init: check existing session ── */
 (async function initApp() {
+  // Hide home immediately if a session is likely (avoid flash of landing page)
+  const rawSession = localStorage.getItem('sb-meyliquqxinhtkfszize-auth-token');
+  if (rawSession) {
+    document.getElementById('view-home')?.classList.remove('active');
+  }
+
   const { data: { session } } = await _SB.auth.getSession();
   if (session) {
     await _loadUserData(session.user.id);
+    return;
   }
+
+  // No agency session — check for saved client portal session
+  try {
+    const savedClient = sessionStorage.getItem('trackly-client-session');
+    if (savedClient) {
+      const { client, projs } = JSON.parse(savedClient);
+      if (client && client.access_code) {
+        window._clientLoggedIn = client;
+        window._clientProjects = projs || [];
+        setView('client');
+        renderClientView();
+        // Restore sub-view (dashboard or project panel)
+        const subView = sessionStorage.getItem('trackly-client-subview');
+        if (subView && subView !== 'dashboard' && projectSteps[subView]) {
+          openClientProject(subView);
+        }
+        return;
+      }
+    }
+  } catch(e) {}
+
+  // No session at all — show home
+  document.getElementById('view-home')?.classList.add('active');
 })();
 
 async function _loadUserData(authUserId) {
@@ -5162,7 +5210,12 @@ async function _enterDashboard() {
   renderRatingStars(0);
   _updateAgencyUI();
   _renderAgencyNotifs();
-  showPage('dashboard', document.querySelector('.nav-item'));
+  // Restore last visited page
+  const savedPage = sessionStorage.getItem('trackly-agency-page') || 'dashboard';
+  const navItems = document.querySelectorAll('.nav-item');
+  const pageIds = ['dashboard','projects','clients','reports','users','settings','profile','whitelabel'];
+  const idx = pageIds.indexOf(savedPage);
+  showPage(savedPage, idx >= 0 ? navItems[idx] : navItems[0]);
   await Promise.all([_loadClients(), _loadProjects(), _loadAgencyUsers()]);
 }
 
@@ -5539,7 +5592,16 @@ async function handleProfileAvatarUpload(event) {
     if (prev) { prev.innerHTML = `<img src="${base64}" style="width:100%;height:100%;object-fit:cover;border-radius:14px">`; prev.style.background = 'transparent'; }
     if (_agency) {
       const { error } = await _SB.from('agencies').update({ avatar: base64 }).eq('id', _agency.id);
-      if (error) { showNotif('⚠️ Erro ao salvar foto: ' + (error.message||error.code), true); return; }
+      if (error) {
+        console.error('[TrackLy] Erro ao salvar avatar da agência:', error);
+        if ((error.message||'').toLowerCase().includes('column') || error.code === '42703') {
+          console.warn('%c[TrackLy] A coluna avatar não existe na tabela agencies. Execute no Supabase SQL Editor:\nALTER TABLE agencies ADD COLUMN IF NOT EXISTS avatar text;\n\nDepois, execute também:\nALTER TABLE clients ADD COLUMN IF NOT EXISTS avatar text;\nALTER TABLE agency_users ADD COLUMN IF NOT EXISTS avatar text;', 'color:orange;font-size:14px;font-weight:bold');
+          showNotif('⚠️ Execute o SQL no Supabase para habilitar fotos (ver console)', true);
+        } else {
+          showNotif('⚠️ Erro ao salvar foto: ' + (error.message||error.code), true);
+        }
+        return;
+      }
       _agency.avatar = base64;
       _updateAgencyUI();
       showNotif('✅ Foto atualizada!');
