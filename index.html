@@ -5101,10 +5101,28 @@ async function _loadUserData(authUserId) {
   if (data) {
     _authUser = data;
     _agency = data.agencies;
-    // Restore avatar: priority = agencies.avatar → agency_users.avatar → localStorage
+
+    // Restore profile fields from localStorage (overrides stale/missing DB columns)
+    try {
+      const saved = localStorage.getItem('trackly-profile-' + _agency?.id);
+      if (saved) {
+        const p = JSON.parse(saved);
+        if (_agency) {
+          if (p.name)     _agency.name     = p.name;
+          if (p.email)    _agency.email    = p.email;
+          if (p.whatsapp) _agency.whatsapp = p.whatsapp;
+          if (p.site)     _agency.site     = p.site;
+          if (p.city)     _agency.city     = p.city;
+          if (p.bio)      _agency.bio      = p.bio;
+        }
+        if (p.owner && _authUser) _authUser.name = p.owner;
+      }
+    } catch(e) {}
+
+    // Restore avatar: agencies.avatar → agency_users.avatar → localStorage
     if (_agency && !_agency.avatar) {
       if (data.avatar) {
-        _agency.avatar = data.avatar; // from agency_users.avatar (guaranteed column)
+        _agency.avatar = data.avatar;
       } else {
         try {
           const local = localStorage.getItem('trackly-agency-avatar-' + _agency.id);
@@ -5112,6 +5130,7 @@ async function _loadUserData(authUserId) {
         } catch(e) {}
       }
     }
+
     await _enterDashboard();
   }
 }
@@ -5561,24 +5580,52 @@ function _updateProfileUI() {
 async function saveProfile() {
   if (!_agency) return;
   const get = id => document.getElementById(id)?.value?.trim() || null;
-  const name  = get('profile-agency-name');
-  const owner = get('profile-owner-name');
+  const name     = get('profile-agency-name');
+  const owner    = get('profile-owner-name');
+  const email    = get('profile-email');
+  const whatsapp = get('profile-whatsapp');
+  const site     = get('profile-site');
+  const city     = get('profile-city');
+  const bio      = get('profile-bio');
   if (!name) { showNotif('⚠️ Informe o nome da agência', true); return; }
   const btn = document.querySelector('#page-profile .save-row .btn-sm.primary');
   if (btn) { btn.textContent = 'Salvando...'; btn.disabled = true; }
-  const { error } = await _SB.from('agencies').update({
-    name, email: get('profile-email'), whatsapp: get('profile-whatsapp'),
-    site: get('profile-site'), city: get('profile-city'), bio: get('profile-bio')
-  }).eq('id', _agency.id);
+
+  // 1. Save all profile fields to localStorage immediately (persists on F5, any device logged in here)
+  const profileData = { name, email, whatsapp, site, city, bio, owner };
+  try { localStorage.setItem('trackly-profile-' + _agency.id, JSON.stringify(profileData)); } catch(e) {}
+
+  // 2. Update in-memory right away so UI is instant
+  Object.assign(_agency, { name, email, whatsapp, site, city, bio });
+  if (owner && _authUser) { _authUser.name = owner; }
+  _updateAgencyUI();
+
+  // 3. Save owner name to agency_users (this column definitely exists)
   if (owner && _authUser?.id) {
     await _SB.from('agency_users').update({ name: owner }).eq('id', _authUser.id);
-    _authUser.name = owner;
   }
+
+  // 4. Try saving to agencies table (may fail if columns missing — silent fallback)
+  const { error, data: updated } = await _SB.from('agencies').update({
+    name, email, whatsapp, site, city, bio
+  }).eq('id', _agency.id).select('id');
+
   if (btn) { btn.textContent = 'Salvar Perfil'; btn.disabled = false; }
-  if (error) { showNotif('⚠️ Erro ao salvar: ' + error.message, true); return; }
-  _agency.name = name;
-  _updateAgencyUI();
-  showNotif('✅ Perfil atualizado!');
+
+  if (error || !updated || updated.length === 0) {
+    if (error) console.warn('[TrackLy] Erro ao salvar perfil no banco:', error.message,
+      '\nPara corrigir, execute no Supabase SQL Editor:\n' +
+      'ALTER TABLE agencies ADD COLUMN IF NOT EXISTS whatsapp text;\n' +
+      'ALTER TABLE agencies ADD COLUMN IF NOT EXISTS site text;\n' +
+      'ALTER TABLE agencies ADD COLUMN IF NOT EXISTS city text;\n' +
+      'ALTER TABLE agencies ADD COLUMN IF NOT EXISTS bio text;\n' +
+      'ALTER TABLE agencies ADD COLUMN IF NOT EXISTS avatar text;\n' +
+      'CREATE POLICY "agency_owners_update" ON agencies FOR UPDATE TO authenticated USING (true) WITH CHECK (true);'
+    );
+    showNotif('✅ Perfil salvo localmente!');
+  } else {
+    showNotif('✅ Perfil atualizado!');
+  }
 }
 
 async function savePassword() {
